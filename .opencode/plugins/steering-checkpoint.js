@@ -3,6 +3,7 @@ import { tool } from "@opencode-ai/plugin"
 const steerQueue = new Map()
 let _checkpointed = false
 let _consecutiveViolations = 0
+let _lastCheckpointTime = Date.now()
 
 const TIER_REQUEST = [
   "## Checkpoint Protocol",
@@ -41,6 +42,12 @@ function tierPrompt() {
   return TIER_REQUEST
 }
 
+function secondsSinceLastCheckpoint() {
+  return Math.round((Date.now() - _lastCheckpointTime) / 1000)
+}
+
+const CP_MARKER = "opencode_checkpoint_instruction"
+
 export const SteeringCheckpoint = async (ctx) => {
   return {
     "tui.prompt.submit": async (input, output) => {
@@ -62,7 +69,23 @@ export const SteeringCheckpoint = async (ctx) => {
         async execute(args, context) {
           const text = steerQueue.get(context.sessionID)
           steerQueue.delete(context.sessionID)
-          return text ?? ""
+          const secs = secondsSinceLastCheckpoint()
+          if (text) {
+            return {
+              output: text,
+              metadata: {
+                tier: _consecutiveViolations,
+                seconds_since_last: secs,
+              },
+            }
+          }
+          return {
+            output: "",
+            metadata: {
+              tier: _consecutiveViolations,
+              seconds_since_last: secs,
+            },
+          }
         },
       }),
     },
@@ -72,6 +95,24 @@ export const SteeringCheckpoint = async (ctx) => {
         output.system.push(prompt)
       }
       _checkpointed = false
+    },
+    "experimental.chat.messages.transform"(input, output) {
+      if (output.messages.some((m) =>
+        m.parts.some((p) => p.type === "text" && p.text?.includes(CP_MARKER))
+      )) {
+        return
+      }
+      const prompt = tierPrompt()
+      const msg = {
+        info: {
+          role: "user",
+          synthetic: true,
+        },
+        parts: [
+          { type: "text", text: `${CP_MARKER}\n${prompt}` },
+        ],
+      }
+      output.messages.unshift(msg)
     },
     event: async ({ event }) => {
       if (event.type === "session.status" && event.properties?.status === "idle") {
@@ -86,6 +127,7 @@ export const SteeringCheckpoint = async (ctx) => {
     "tool.execute.after": async (input, output) => {
       if (input.tool === "opencode_checkpoint") {
         _checkpointed = true
+        _lastCheckpointTime = Date.now()
       }
     },
   }
