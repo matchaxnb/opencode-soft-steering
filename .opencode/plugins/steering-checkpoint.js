@@ -1,7 +1,6 @@
 import { tool } from "@opencode-ai/plugin"
-import { readFile, unlink, writeFile } from "node:fs/promises"
 
-const STEER_FILE = "/tmp/opencode-steer"
+const steerQueue = new Map()
 let _checkpointed = false
 let _warnNext = false
 
@@ -46,10 +45,8 @@ export const SteeringCheckpoint = async (ctx) => {
   return {
     "tui.prompt.submit": async (input, output) => {
       if (!input.active) return
-      try {
-        await writeFile(STEER_FILE, input.text)
-        output.consumed = true
-      } catch {}
+      steerQueue.set(input.sessionID, input.text)
+      output.consumed = true
     },
     tool: {
       opencode_checkpoint: tool({
@@ -63,12 +60,9 @@ export const SteeringCheckpoint = async (ctx) => {
           ),
         },
         async execute(args, context) {
-          try {
-            const text = await readFile(STEER_FILE, "utf-8")
-            await unlink(STEER_FILE)
-            if (text.trim()) return text.trim()
-          } catch {}
-          return ""
+          const text = steerQueue.get(context.sessionID)
+          steerQueue.delete(context.sessionID)
+          return text ?? ""
         },
       }),
     },
