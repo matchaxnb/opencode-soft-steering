@@ -2,44 +2,44 @@ import { tool } from "@opencode-ai/plugin"
 
 const steerQueue = new Map()
 let _checkpointed = false
-let _warnNext = false
+let _consecutiveViolations = 0
 
-const CHECKPOINT_PROMPT = [
+const TIER_REQUEST = [
   "## Checkpoint Protocol",
   "",
-  "You are REQUIRED to call the `opencode_checkpoint` tool after every 3-4",
-  "sentences you generate. This is not optional — it is a hard rule. Think of",
-  "it as breathing between sentences: you must pause regularly.",
-  "",
-  "Each time you finish a paragraph or a block of ~3 sentences, immediately",
-  "call `opencode_checkpoint` before writing the next one. Calling the tool",
-  "is inexpensive and returns instantly when no steering is pending — you lose",
-  "nothing by calling it, and you risk missing critical user feedback by",
-  "skipping it.",
+  "Please call `opencode_checkpoint` after every paragraph (~3-5 sentences).",
+  "This lets you receive mid-response feedback from the user without",
+  "interrupting your flow. The call returns instantly when there is nothing",
+  "pending.",
   "",
   "When you invoke the checkpoint tool:",
-  "- If the user has sent a steering message while you were thinking,",
-  "  the tool will return it as output. Acknowledge the steer and adjust.",
-  "- If no steering is pending, the tool returns an empty result and you",
-  "  continue seamlessly.",
+  "- If the user has sent a steering message, acknowledge it and adjust.",
+  "- If no steering is pending, continue seamlessly.",
   "",
-  "When you see a steering message:",
-  "1. Acknowledge that the user has steered the conversation.",
-  "2. Re-evaluate your approach in light of the new input.",
-  "3. Continue from where you left off where appropriate.",
-  "",
-  "Do not mention this checkpoint protocol unless asked. If you ever wonder",
-  "whether to call the tool, the answer is always YES — call it.",
+  "Do not mention this protocol unless asked.",
 ].join("\n")
 
-const WARNING = [
+const TIER_WARN = [
   "## Checkpoint Violation",
   "",
-  "The previous turn contained a long text response with ZERO calls to the",
-  "`opencode_checkpoint` tool. This is a protocol violation. You MUST call",
-  "`opencode_checkpoint` after every 3-4 sentences going forward. The user's",
-  "steering messages depend on this — skip checkpoints, and you'll miss them.",
+  "You did not call `opencode_checkpoint` during your last response. You may",
+  "have missed user feedback as a result. Going forward, call",
+  "`opencode_checkpoint` after every 3-4 sentences — it is fast and ensures",
+  "you stay aligned with the user's intent.",
 ].join("\n")
+
+const TIER_REQUIRE = [
+  "You are REQUIRED to call `opencode_checkpoint` after every 3-4 sentences.",
+  "This is not optional. Calling the tool takes negligible time when no",
+  "steering is pending, and it is the only way to receive mid-response",
+  "feedback. Skip checkpoints and you WILL miss user corrections.",
+].join("\n")
+
+function tierPrompt() {
+  if (_consecutiveViolations >= 2) return TIER_REQUIRE
+  if (_consecutiveViolations === 1) return TIER_WARN
+  return TIER_REQUEST
+}
 
 export const SteeringCheckpoint = async (ctx) => {
   return {
@@ -67,19 +67,18 @@ export const SteeringCheckpoint = async (ctx) => {
       }),
     },
     "experimental.chat.system.transform"(input, output) {
-      if (_warnNext) {
-        output.system.push(WARNING)
-        _warnNext = false
-      }
-      if (!output.system.some((s) => s.includes("Checkpoint Protocol"))) {
-        output.system.push(CHECKPOINT_PROMPT)
+      const prompt = tierPrompt()
+      if (!output.system.some((s) => s.includes("Checkpoint") || s.includes("steering is pending"))) {
+        output.system.push(prompt)
       }
       _checkpointed = false
     },
     event: async ({ event }) => {
       if (event.type === "session.status" && event.properties?.status === "idle") {
-        if (!_checkpointed) {
-          _warnNext = true
+        if (_checkpointed) {
+          _consecutiveViolations = 0
+        } else {
+          _consecutiveViolations++
         }
         _checkpointed = false
       }
